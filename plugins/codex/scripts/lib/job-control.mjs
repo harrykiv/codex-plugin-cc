@@ -158,6 +158,26 @@ function inferLegacyJobPhase(job, progressPreview = []) {
   return job.jobClass === "review" ? "reviewing" : "running";
 }
 
+function computeLastEvent(job, nowMs = Date.now()) {
+  let atMs = null;
+  if (job.logFile && typeof job.logFile === "string") {
+    try {
+      if (fs.existsSync(job.logFile)) atMs = fs.statSync(job.logFile).mtimeMs;
+    } catch {
+      // unreadable log -> fall through to updatedAt
+    }
+  }
+  if (atMs == null && typeof job.updatedAt === "string") {
+    const parsed = Date.parse(job.updatedAt);
+    if (Number.isFinite(parsed)) atMs = parsed;
+  }
+  if (atMs == null) return { lastEventAt: null, secondsSinceLastEvent: null };
+  return {
+    lastEventAt: new Date(atMs).toISOString(),
+    secondsSinceLastEvent: Math.max(0, Math.round((nowMs - atMs) / 1000)),
+  };
+}
+
 export function enrichJob(job, options = {}) {
   const maxProgressLines = options.maxProgressLines ?? DEFAULT_MAX_PROGRESS_LINES;
   const enriched = {
@@ -176,6 +196,7 @@ export function enrichJob(job, options = {}) {
 
   return {
     ...enriched,
+    ...computeLastEvent(job),
     phase: enriched.phase ?? inferLegacyJobPhase(enriched, enriched.progressPreview)
   };
 }
