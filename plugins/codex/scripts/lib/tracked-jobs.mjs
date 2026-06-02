@@ -1,7 +1,8 @@
 import fs from "node:fs";
+import path from "node:path";
 import process from "node:process";
 
-import { readJobFile, resolveJobFile, resolveJobLogFile, upsertJob, writeJobFile } from "./state.mjs";
+import { readJobFile, resolveJobFile, resolveJobLogFile, resolveJobsDir, upsertJob, writeJobFile } from "./state.mjs";
 
 export const SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
 
@@ -139,6 +140,52 @@ function readStoredJobOrNull(workspaceRoot, jobId) {
   return readJobFile(jobFile);
 }
 
+function readLastLogLines(logFile, maxLines = 20) {
+  if (!logFile || typeof logFile !== "string") return [];
+  try {
+    if (!fs.statSync(logFile).isFile()) return [];
+    return fs
+      .readFileSync(logFile, "utf8")
+      .split(/\r?\n/)
+      .map((line) => line.trimEnd())
+      .filter(Boolean)
+      .slice(-maxLines);
+  } catch {
+    return [];
+  }
+}
+
+// Best-effort: a write error here must never mask the original job failure.
+function writeFailureRecord(job, { exitCode = null, signal = null, reasonClass, message, logFile }) {
+  try {
+    const failurePath = path.join(resolveJobsDir(job.workspaceRoot), `${job.id}.failure.json`);
+    const record = {
+      jobId: job.id,
+      status: "failed",
+      exitCode,
+      signal,
+      reasonClass: reasonClass || "exception",
+      message: message ?? "",
+      lastLogLines: readLastLogLines(logFile),
+      at: nowIso(),
+    };
+    fs.writeFileSync(failurePath, JSON.stringify(record, null, 2));
+    return failurePath;
+  } catch {
+    return null;
+  }
+}
+
+// Best-effort reason classification from the thrown error's shape/message.
+function classifyFailure(error) {
+  const msg = ((error && (error.message || String(error))) || "").toLowerCase();
+  if ((error && error.code === "ENOENT") || /spawn|enoent|command not found/.test(msg)) return "spawn_failed";
+  if (/timed out|timeout|etimedout|deadline exceeded/.test(msg)) return "timeout";
+  if (/cancel/.test(msg)) return "cancelled";
+  if (/\bapi\b|rate limit|\b429\b|\b5\d\d\b|stream closed|network|econnreset|fetch failed/.test(msg)) return "api_error";
+  return "exception";
+}
+
 export async function runTrackedJob(job, runner, options = {}) {
   const runningRecord = {
     ...job,
@@ -155,6 +202,14 @@ export async function runTrackedJob(job, runner, options = {}) {
     const execution = await runner();
     const completionStatus = execution.exitStatus === 0 ? "completed" : "failed";
     const completedAt = nowIso();
+    const failureFile = completionStatus === "failed"
+      ? writeFailureRecord(job, {
+          exitCode: execution.exitStatus,
+          reasonClass: "nonzero_exit",
+          message: execution.summary ?? execution.rendered ?? "non-zero exit",
+          logFile: options.logFile ?? job.logFile ?? null,
+        })
+      : null;
     writeJobFile(job.workspaceRoot, job.id, {
       ...runningRecord,
       status: completionStatus,
@@ -163,6 +218,7 @@ export async function runTrackedJob(job, runner, options = {}) {
       pid: null,
       phase: completionStatus === "completed" ? "done" : "failed",
       completedAt,
+      failureFile,
       result: execution.payload,
       rendered: execution.rendered
     });
@@ -174,7 +230,8 @@ export async function runTrackedJob(job, runner, options = {}) {
       summary: execution.summary,
       phase: completionStatus === "completed" ? "done" : "failed",
       pid: null,
-      completedAt
+      completedAt,
+      failureFile
     });
     appendLogBlock(options.logFile ?? job.logFile ?? null, "Final output", execution.rendered);
     return execution;
@@ -182,11 +239,17 @@ export async function runTrackedJob(job, runner, options = {}) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     const existing = readStoredJobOrNull(job.workspaceRoot, job.id) ?? runningRecord;
     const completedAt = nowIso();
+    const failureFile = writeFailureRecord(job, {
+      reasonClass: classifyFailure(error),
+      message: errorMessage,
+      logFile: options.logFile ?? job.logFile ?? existing.logFile ?? null,
+    });
     writeJobFile(job.workspaceRoot, job.id, {
       ...existing,
       status: "failed",
       phase: "failed",
       errorMessage,
+      failureFile,
       pid: null,
       completedAt,
       logFile: options.logFile ?? job.logFile ?? existing.logFile ?? null
@@ -197,6 +260,7 @@ export async function runTrackedJob(job, runner, options = {}) {
       phase: "failed",
       pid: null,
       errorMessage,
+      failureFile,
       completedAt
     });
     throw error;
