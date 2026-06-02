@@ -4,7 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { makeTempDir } from "./helpers.mjs";
-import { enrichJob } from "../plugins/codex/scripts/lib/job-control.mjs";
+import { enrichJob, readJobProgressPreview } from "../plugins/codex/scripts/lib/job-control.mjs";
 
 test("enrichJob derives lastEventAt from logFile mtime (mtime wins over stale updatedAt)", () => {
   const dir = makeTempDir();
@@ -50,4 +50,21 @@ test("enrichJob does not throw and ignores a non-file logFile (directory) for fr
   assert.equal(enriched.progressPreview.length, 0);
   // a directory is NOT a valid event source -> freshness falls back to updatedAt
   assert.equal(enriched.lastEventAt, "2026-06-02T00:00:00.000Z");
+});
+
+test("readJobProgressPreview returns [] for a non-regular-file path (never reads it)", () => {
+  const dir = makeTempDir(); // a directory is not a regular file
+  assert.deepEqual(readJobProgressPreview(dir), []);
+});
+
+test("readJobProgressPreview returns [] for a missing path", () => {
+  assert.deepEqual(readJobProgressPreview("/no/such/path-xyz.log"), []);
+});
+
+test("readJobProgressPreview reads bracketed lines from a real log file", () => {
+  const dir = makeTempDir();
+  const lf = path.join(dir, "real.log");
+  fs.writeFileSync(lf, "[2026-06-02] one\n[2026-06-02] two\n");
+  const lines = readJobProgressPreview(lf, 10);
+  assert.ok(Array.isArray(lines) && lines.length >= 1);
 });

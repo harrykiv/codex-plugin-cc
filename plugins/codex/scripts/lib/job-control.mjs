@@ -59,11 +59,16 @@ function isProgressBlockTitle(line) {
 }
 
 export function readJobProgressPreview(logFile, maxLines = DEFAULT_MAX_PROGRESS_LINES) {
-  if (!logFile || !fs.existsSync(logFile)) {
+  if (!logFile || typeof logFile !== "string") {
     return [];
   }
 
   try {
+    // Never read a non-regular file: a FIFO/char device would make readFileSync block indefinitely.
+    if (!fs.statSync(logFile).isFile()) {
+      return [];
+    }
+
     const lines = fs
       .readFileSync(logFile, "utf8")
       .split(/\r?\n/)
@@ -75,7 +80,7 @@ export function readJobProgressPreview(logFile, maxLines = DEFAULT_MAX_PROGRESS_
 
     return lines.slice(-maxLines);
   } catch {
-    // present-but-unreadable logFile (directory, permission denied, ...) -> degrade, never throw on the status path
+    // missing/unreadable -> degrade, never throw on the status path
     return [];
   }
 }
