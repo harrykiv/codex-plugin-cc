@@ -5,7 +5,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { makeTempDir } from "./helpers.mjs";
-import { resolveJobFile, resolveJobLogFile, resolveStateDir, resolveStateFile, saveState } from "../plugins/codex/scripts/lib/state.mjs";
+import { resolveJobFile, resolveJobLogFile, resolveJobsDir, resolveStateDir, resolveStateFile, saveState } from "../plugins/codex/scripts/lib/state.mjs";
 
 test("resolveStateDir uses a temp-backed per-workspace directory", () => {
   const workspace = makeTempDir();
@@ -102,4 +102,52 @@ test("saveState prunes dropped job artifacts when indexed jobs exceed the cap", 
       .flatMap((jobId) => [`${jobId}.json`, `${jobId}.log`])
       .sort()
   );
+});
+
+test("saveState prunes the failure.json artifact of a dropped job", () => {
+  const workspace = makeTempDir();
+  const stateFile = resolveStateFile(workspace);
+  fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+
+  const jobs = Array.from({ length: 51 }, (_, index) => {
+    const jobId = `job-${index}`;
+    const updatedAt = new Date(Date.UTC(2026, 0, 1, 0, index, 0)).toISOString();
+    const logFile = resolveJobLogFile(workspace, jobId);
+    const jobFile = resolveJobFile(workspace, jobId);
+    fs.writeFileSync(logFile, `log ${jobId}\n`, "utf8");
+    fs.writeFileSync(jobFile, JSON.stringify({ id: jobId, status: "completed" }, null, 2), "utf8");
+    return {
+      id: jobId,
+      status: "completed",
+      logFile,
+      updatedAt,
+      createdAt: updatedAt
+    };
+  });
+
+  // job-0 is the oldest and will be pruned; give it a failure record artifact.
+  const prunedFailureFile = path.join(resolveJobsDir(workspace), "job-0.failure.json");
+  fs.writeFileSync(prunedFailureFile, JSON.stringify({ jobId: "job-0", status: "failed" }, null, 2), "utf8");
+
+  fs.writeFileSync(
+    stateFile,
+    `${JSON.stringify(
+      {
+        version: 1,
+        config: { stopReviewGate: false },
+        jobs
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+
+  saveState(workspace, {
+    version: 1,
+    config: { stopReviewGate: false },
+    jobs
+  });
+
+  assert.equal(fs.existsSync(prunedFailureFile), false, "pruned job's failure.json should be removed");
 });

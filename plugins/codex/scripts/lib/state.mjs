@@ -109,6 +109,12 @@ export function saveState(cwd, state) {
     }
     removeJobFile(resolveJobFile(cwd, job.id));
     removeFileIfExists(job.logFile);
+    // remove the failure record artifact too (added by tracked-jobs failure.json)
+    const failurePath = path.join(resolveJobsDir(cwd), `${job.id}.failure.json`);
+    try { fs.rmSync(failurePath, { force: true }); } catch { /* best-effort */ }
+    if (job.failureFile && job.failureFile !== failurePath) {
+      try { fs.rmSync(job.failureFile, { force: true }); } catch { /* best-effort */ }
+    }
   }
 
   fs.writeFileSync(resolveStateFile(cwd), `${JSON.stringify(nextState, null, 2)}\n`, "utf8");

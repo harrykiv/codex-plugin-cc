@@ -102,3 +102,30 @@ test("failure.json lastLogLines includes the final rendered output on non-zero e
     `expected final output in lastLogLines, got: ${JSON.stringify(rec.lastLogLines)}`
   );
 });
+
+test("a final-output log append failure does not mask the runner's terminal outcome", async () => {
+  const ws = makeTempDir();
+  const job = makeJob(ws);
+  const realAppend = fs.appendFileSync;
+  fs.appendFileSync = () => { throw new Error("disk full"); };
+  try {
+    // non-zero runner -> must still be recorded as failed (NOT thrown), and must not reject
+    await runTrackedJob(job, async () => ({ exitStatus: 1, payload: {}, rendered: "x", summary: "boom" }), { logFile: job.logFile });
+  } finally {
+    fs.appendFileSync = realAppend;
+  }
+  assert.equal(readJobRecord(ws).status, "failed");
+});
+
+test("failure.json lastLogLines is bounded and marked truncated for a large log", async () => {
+  const ws = makeTempDir();
+  const job = makeJob(ws);
+  const big = Array.from({ length: 6000 }, (_, i) => `[2026] line ${i}`).join("\n") + "\n";
+  fs.writeFileSync(job.logFile, big);
+  assert.ok(fs.statSync(job.logFile).size > 65536);
+  await runTrackedJob(job, async () => ({ exitStatus: 1, payload: {}, rendered: "done", summary: "boom" }), { logFile: job.logFile });
+  const rec = JSON.parse(fs.readFileSync(path.join(resolveJobsDir(ws), "t1.failure.json"), "utf8"));
+  assert.ok(rec.lastLogLines.length <= 21, `expected <=21 lines, got ${rec.lastLogLines.length}`);
+  assert.ok(rec.lastLogLines[0].includes("truncated"));
+  assert.ok(rec.lastLogLines.some((l) => l.includes("line 5999") || l.includes("done")));
+});

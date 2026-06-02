@@ -140,16 +140,31 @@ function readStoredJobOrNull(workspaceRoot, jobId) {
   return readJobFile(jobFile);
 }
 
-function readLastLogLines(logFile, maxLines = 20) {
+function readLastLogLines(logFile, maxLines = 20, maxBytes = 65536) {
   if (!logFile || typeof logFile !== "string") return [];
   try {
-    if (!fs.statSync(logFile).isFile()) return [];
-    return fs
-      .readFileSync(logFile, "utf8")
-      .split(/\r?\n/)
-      .map((line) => line.trimEnd())
-      .filter(Boolean)
-      .slice(-maxLines);
+    const st = fs.statSync(logFile);
+    if (!st.isFile()) return [];
+    let content;
+    let truncated = false;
+    if (st.size > maxBytes) {
+      const fd = fs.openSync(logFile, "r");
+      try {
+        const buf = Buffer.alloc(maxBytes);
+        const bytesRead = fs.readSync(fd, buf, 0, maxBytes, st.size - maxBytes);
+        content = buf.toString("utf8", 0, bytesRead);
+      } finally {
+        fs.closeSync(fd);
+      }
+      truncated = true;
+    } else {
+      content = fs.readFileSync(logFile, "utf8");
+    }
+    let rawLines = content.split(/\r?\n/);
+    if (truncated) rawLines = rawLines.slice(1); // drop the partial leading line
+    const lines = rawLines.map((line) => line.trimEnd()).filter(Boolean).slice(-maxLines);
+    if (truncated) lines.unshift("[… earlier log truncated …]");
+    return lines;
   } catch {
     return [];
   }
@@ -202,7 +217,11 @@ export async function runTrackedJob(job, runner, options = {}) {
     const execution = await runner();
     const completionStatus = execution.exitStatus === 0 ? "completed" : "failed";
     const completedAt = nowIso();
-    appendLogBlock(options.logFile ?? job.logFile ?? null, "Final output", execution.rendered);
+    try {
+      appendLogBlock(options.logFile ?? job.logFile ?? null, "Final output", execution.rendered);
+    } catch {
+      // best-effort: a diagnostic log write must never mask the real terminal outcome
+    }
     const failureFile = completionStatus === "failed"
       ? writeFailureRecord(job, {
           exitCode: execution.exitStatus,
