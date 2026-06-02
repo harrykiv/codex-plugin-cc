@@ -202,6 +202,7 @@ export async function runTrackedJob(job, runner, options = {}) {
     const execution = await runner();
     const completionStatus = execution.exitStatus === 0 ? "completed" : "failed";
     const completedAt = nowIso();
+    appendLogBlock(options.logFile ?? job.logFile ?? null, "Final output", execution.rendered);
     const failureFile = completionStatus === "failed"
       ? writeFailureRecord(job, {
           exitCode: execution.exitStatus,
@@ -233,7 +234,6 @@ export async function runTrackedJob(job, runner, options = {}) {
       completedAt,
       failureFile
     });
-    appendLogBlock(options.logFile ?? job.logFile ?? null, "Final output", execution.rendered);
     return execution;
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);

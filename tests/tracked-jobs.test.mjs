@@ -87,3 +87,18 @@ test("a failure.json write error does not mask the original failure", async () =
   }
   assert.equal(readJobRecord(ws).status, "failed");
 });
+
+test("failure.json lastLogLines includes the final rendered output on non-zero exit", async () => {
+  const ws = makeTempDir();
+  const job = makeJob(ws);
+  await runTrackedJob(
+    job,
+    async () => ({ exitStatus: 1, payload: {}, rendered: "FINAL_OUTPUT_MARKER_XYZ", summary: "boom" }),
+    { logFile: job.logFile }
+  );
+  const rec = JSON.parse(fs.readFileSync(path.join(resolveJobsDir(ws), "t1.failure.json"), "utf8"));
+  assert.ok(
+    rec.lastLogLines.some((l) => l.includes("FINAL_OUTPUT_MARKER_XYZ")),
+    `expected final output in lastLogLines, got: ${JSON.stringify(rec.lastLogLines)}`
+  );
+});
