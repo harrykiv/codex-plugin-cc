@@ -109,11 +109,13 @@ export function saveState(cwd, state) {
     }
     removeJobFile(resolveJobFile(cwd, job.id));
     removeFileIfExists(job.logFile);
-    // remove the failure record artifact too (added by tracked-jobs failure.json)
-    const failurePath = path.join(resolveJobsDir(cwd), `${job.id}.failure.json`);
-    try { fs.rmSync(failurePath, { force: true }); } catch { /* best-effort */ }
-    if (job.failureFile && job.failureFile !== failurePath) {
-      try { fs.rmSync(job.failureFile, { force: true }); } catch { /* best-effort */ }
+    // Only ever delete the canonical, job-id-derived failure record inside the jobs dir.
+    // Never rmSync an arbitrary stored job.failureFile pointer — a corrupt/version-skewed
+    // record could otherwise delete any user-writable file during routine pruning.
+    try {
+      fs.rmSync(path.join(resolveJobsDir(cwd), `${job.id}.failure.json`), { force: true });
+    } catch {
+      /* best-effort */
     }
   }
 

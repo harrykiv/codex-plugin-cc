@@ -161,7 +161,7 @@ function readLastLogLines(logFile, maxLines = 20, maxBytes = 65536) {
       content = fs.readFileSync(logFile, "utf8");
     }
     let rawLines = content.split(/\r?\n/);
-    if (truncated) rawLines = rawLines.slice(1); // drop the partial leading line
+    if (truncated && rawLines.length > 1) rawLines = rawLines.slice(1); // drop partial leading line only if more remain
     const lines = rawLines.map((line) => line.trimEnd()).filter(Boolean).slice(-maxLines);
     if (truncated) lines.unshift("[… earlier log truncated …]");
     return lines;
@@ -258,11 +258,16 @@ export async function runTrackedJob(job, runner, options = {}) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     const existing = readStoredJobOrNull(job.workspaceRoot, job.id) ?? runningRecord;
     const completedAt = nowIso();
-    const failureFile = writeFailureRecord(job, {
-      reasonClass: classifyFailure(error),
-      message: errorMessage,
-      logFile: options.logFile ?? job.logFile ?? existing.logFile ?? null,
-    });
+    const canonicalFailure = path.join(resolveJobsDir(job.workspaceRoot), `${job.id}.failure.json`);
+    // If the success path already wrote a failure record for a known runner outcome,
+    // preserve it — a persistence/I-O error must not reclassify the real diagnostic.
+    const failureFile = fs.existsSync(canonicalFailure)
+      ? canonicalFailure
+      : writeFailureRecord(job, {
+          reasonClass: classifyFailure(error),
+          message: errorMessage,
+          logFile: options.logFile ?? job.logFile ?? existing.logFile ?? null,
+        });
     writeJobFile(job.workspaceRoot, job.id, {
       ...existing,
       status: "failed",

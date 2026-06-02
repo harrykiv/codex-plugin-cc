@@ -117,6 +117,51 @@ test("a final-output log append failure does not mask the runner's terminal outc
   assert.equal(readJobRecord(ws).status, "failed");
 });
 
+test("a persistence error does not reclassify an already-written failure record", async () => {
+  const ws = makeTempDir();
+  const job = makeJob(ws);
+  const realWrite = fs.writeFileSync;
+  // The success path writes t1.failure.json (reasonClass nonzero_exit) BEFORE the
+  // t1.json job record. Allow the initial running-record write and the failure
+  // record write, then throw on the *post-failure-record* t1.json write so control
+  // reaches the catch with a failure.json already present. The catch must NOT
+  // overwrite/reclassify it.
+  let sawFailureRecord = false;
+  fs.writeFileSync = (p, ...rest) => {
+    if (String(p).endsWith("/t1.failure.json")) {
+      sawFailureRecord = true;
+      return realWrite(p, ...rest);
+    }
+    if (sawFailureRecord && String(p).endsWith("/t1.json")) throw new Error("state write failed");
+    return realWrite(p, ...rest);
+  };
+  try {
+    await assert.rejects(
+      runTrackedJob(
+        job,
+        async () => ({ exitStatus: 1, payload: {}, rendered: "x", summary: "boom" }),
+        { logFile: job.logFile }
+      )
+    );
+  } finally {
+    fs.writeFileSync = realWrite;
+  }
+  const rec = JSON.parse(fs.readFileSync(path.join(resolveJobsDir(ws), "t1.failure.json"), "utf8"));
+  assert.equal(rec.reasonClass, "nonzero_exit");
+});
+
+test("readLastLogLines preserves a large single-line tail (only the marker is not enough)", async () => {
+  const ws = makeTempDir();
+  const job = makeJob(ws);
+  fs.writeFileSync(job.logFile, "[2026] " + "Z".repeat(80000)); // one huge line, no newline
+  // Empty rendered keeps the "Final output" append a no-op (appendLogBlock returns on
+  // empty body), so the log reaches readLastLogLines as a genuine single-line tail.
+  await runTrackedJob(job, async () => ({ exitStatus: 1, payload: {}, rendered: "", summary: "boom" }), { logFile: job.logFile });
+  const rec = JSON.parse(fs.readFileSync(path.join(resolveJobsDir(ws), "t1.failure.json"), "utf8"));
+  // more than just the truncation marker: some "Z" content survives
+  assert.ok(rec.lastLogLines.some((l) => l.includes("ZZZ")), `got: ${JSON.stringify(rec.lastLogLines).slice(0, 200)}`);
+});
+
 test("failure.json lastLogLines is bounded and marked truncated for a large log", async () => {
   const ws = makeTempDir();
   const job = makeJob(ws);

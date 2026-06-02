@@ -151,3 +151,57 @@ test("saveState prunes the failure.json artifact of a dropped job", () => {
 
   assert.equal(fs.existsSync(prunedFailureFile), false, "pruned job's failure.json should be removed");
 });
+
+test("pruning never deletes an out-of-jobs-dir failureFile pointer", () => {
+  const workspace = makeTempDir();
+  const stateFile = resolveStateFile(workspace);
+  fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+
+  // An unrelated user file living OUTSIDE the jobs dir. A corrupt/version-skewed
+  // job record points here; routine pruning must never delete it.
+  const external = path.join(makeTempDir(), "important.txt");
+  fs.writeFileSync(external, "do not delete me", "utf8");
+
+  const jobs = Array.from({ length: 51 }, (_, index) => {
+    const jobId = `job-${index}`;
+    const updatedAt = new Date(Date.UTC(2026, 0, 1, 0, index, 0)).toISOString();
+    const logFile = resolveJobLogFile(workspace, jobId);
+    const jobFile = resolveJobFile(workspace, jobId);
+    fs.writeFileSync(logFile, `log ${jobId}\n`, "utf8");
+    fs.writeFileSync(jobFile, JSON.stringify({ id: jobId, status: "completed" }, null, 2), "utf8");
+    const job = {
+      id: jobId,
+      status: "completed",
+      logFile,
+      updatedAt,
+      createdAt: updatedAt
+    };
+    // job-0 is the oldest and will be pruned; make it carry the external pointer.
+    if (index === 0) {
+      job.failureFile = external;
+    }
+    return job;
+  });
+
+  fs.writeFileSync(
+    stateFile,
+    `${JSON.stringify(
+      {
+        version: 1,
+        config: { stopReviewGate: false },
+        jobs
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+
+  saveState(workspace, {
+    version: 1,
+    config: { stopReviewGate: false },
+    jobs
+  });
+
+  assert.equal(fs.existsSync(external), true, "external file must not be deleted by pruning");
+});
