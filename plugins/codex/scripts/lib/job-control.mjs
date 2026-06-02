@@ -167,9 +167,10 @@ function computeLastEvent(job, nowMs = Date.now()) {
   let atMs = null;
   if (job.logFile && typeof job.logFile === "string") {
     try {
-      if (fs.existsSync(job.logFile)) atMs = fs.statSync(job.logFile).mtimeMs;
+      const st = fs.statSync(job.logFile);
+      if (st.isFile()) atMs = st.mtimeMs;
     } catch {
-      // unreadable log -> fall through to updatedAt
+      // missing/unreadable log -> fall through to updatedAt
     }
   }
   if (atMs == null && typeof job.updatedAt === "string") {
