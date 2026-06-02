@@ -63,16 +63,21 @@ export function readJobProgressPreview(logFile, maxLines = DEFAULT_MAX_PROGRESS_
     return [];
   }
 
-  const lines = fs
-    .readFileSync(logFile, "utf8")
-    .split(/\r?\n/)
-    .map((line) => line.trimEnd())
-    .filter(Boolean)
-    .filter((line) => line.startsWith("["))
-    .map(stripLogPrefix)
-    .filter((line) => line && !isProgressBlockTitle(line));
+  try {
+    const lines = fs
+      .readFileSync(logFile, "utf8")
+      .split(/\r?\n/)
+      .map((line) => line.trimEnd())
+      .filter(Boolean)
+      .filter((line) => line.startsWith("["))
+      .map(stripLogPrefix)
+      .filter((line) => line && !isProgressBlockTitle(line));
 
-  return lines.slice(-maxLines);
+    return lines.slice(-maxLines);
+  } catch {
+    // present-but-unreadable logFile (directory, permission denied, ...) -> degrade, never throw on the status path
+    return [];
+  }
 }
 
 function formatElapsedDuration(startValue, endValue = null) {

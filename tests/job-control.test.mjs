@@ -38,3 +38,15 @@ test("enrichJob yields null freshness when neither logFile nor updatedAt exists"
   assert.equal(enriched.lastEventAt, null);
   assert.equal(enriched.secondsSinceLastEvent, null);
 });
+
+test("enrichJob does not throw when logFile is present but unreadable (e.g. a directory)", () => {
+  const dir = makeTempDir();
+  const job = {
+    id: "j4", status: "running", logFile: dir, // a directory: exists but not a readable file (readFileSync throws EISDIR)
+    createdAt: "2026-06-02T00:00:00.000Z", updatedAt: "2026-06-02T00:00:00.000Z",
+  };
+  const enriched = enrichJob(job); // must NOT throw
+  assert.ok(Array.isArray(enriched.progressPreview));
+  assert.equal(enriched.progressPreview.length, 0);
+  assert.ok(enriched.lastEventAt === null || typeof enriched.lastEventAt === "string");
+});
