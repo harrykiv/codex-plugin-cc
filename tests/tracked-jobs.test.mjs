@@ -174,3 +174,29 @@ test("failure.json lastLogLines is bounded and marked truncated for a large log"
   assert.ok(rec.lastLogLines[0].includes("truncated"));
   assert.ok(rec.lastLogLines.some((l) => l.includes("line 5999") || l.includes("done")));
 });
+
+test("runTrackedJob records a terminal timed_out (not stuck running) when the wall-clock budget is exceeded", async () => {
+  const ws = makeTempDir();
+  const job = makeJob(ws);
+  // A never-resolving runner + a tiny wall-clock budget: the job must end terminal,
+  // as `timed_out`, rather than be left at `running` to trap a status watcher.
+  await assert.rejects(
+    runTrackedJob(job, () => new Promise(() => {}), { logFile: job.logFile, wallClockMs: 50 }),
+    /wall-clock budget/
+  );
+  const rec = readJobRecord(ws);
+  assert.equal(rec.status, "timed_out");
+  assert.equal(rec.phase, "timed_out");
+  assert.equal(rec.pid, null);
+  const fp = path.join(resolveJobsDir(ws), "t1.failure.json");
+  assert.ok(fs.existsSync(fp), "a failure record should be written for the timeout");
+  assert.equal(JSON.parse(fs.readFileSync(fp, "utf8")).reasonClass, "timeout");
+});
+
+test("runTrackedJob leaves the wall-clock watchdog disabled by default (no premature timeout)", async () => {
+  const ws = makeTempDir();
+  const job = makeJob(ws);
+  // No wallClockMs option and no env -> a normal (fast) runner completes cleanly.
+  await runTrackedJob(job, async () => ({ exitStatus: 0, payload: {}, rendered: "ok", summary: "ok" }), { logFile: job.logFile });
+  assert.equal(readJobRecord(ws).status, "completed");
+});

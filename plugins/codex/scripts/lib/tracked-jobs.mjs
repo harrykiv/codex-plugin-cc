@@ -213,8 +213,31 @@ export async function runTrackedJob(job, runner, options = {}) {
   writeJobFile(job.workspaceRoot, job.id, runningRecord);
   upsertJob(job.workspaceRoot, runningRecord);
 
+  // A5: optional wall-clock watchdog. When CODEX_TASK_WALLCLOCK_MS (or
+  // options.wallClockMs) is set, a task that exceeds it is recorded as a terminal
+  // `timed_out` (never left stuck at `running`), so a status watcher cannot hang on
+  // a job the host later hard-kills. Off by default (0) to preserve behavior; set it
+  // just under any external kill ceiling (the observed Codex ceiling is ~10 min).
+  const wallClockMs = Number(options.wallClockMs ?? process.env.CODEX_TASK_WALLCLOCK_MS) || 0;
+  let wallClockTimer = null;
+  const runWithWatchdog = () => {
+    if (wallClockMs <= 0) return runner();
+    return Promise.race([
+      runner(),
+      new Promise((_, reject) => {
+        wallClockTimer = setTimeout(() => {
+          const err = new Error(`task exceeded wall-clock budget of ${wallClockMs}ms`);
+          err.__wallClockTimeout = true;
+          reject(err);
+        }, wallClockMs);
+        wallClockTimer.unref?.();
+      })
+    ]);
+  };
+
   try {
-    const execution = await runner();
+    const execution = await runWithWatchdog();
+    if (wallClockTimer) clearTimeout(wallClockTimer);
     const completionStatus = execution.exitStatus === 0 ? "completed" : "failed";
     const completedAt = nowIso();
     try {
@@ -255,6 +278,39 @@ export async function runTrackedJob(job, runner, options = {}) {
     });
     return execution;
   } catch (error) {
+    if (wallClockTimer) clearTimeout(wallClockTimer);
+    if (error && error.__wallClockTimeout) {
+      // A5 terminal status: a wall-clock timeout is its own outcome, distinct from a
+      // runner failure. Record `timed_out` (bridge `wait` maps it to TIMED_OUT) so no
+      // watcher is left polling a stale `running`.
+      const existingTimedOut = readStoredJobOrNull(job.workspaceRoot, job.id) ?? runningRecord;
+      const timedOutAt = nowIso();
+      const timeoutFailureFile = writeFailureRecord(job, {
+        reasonClass: "timeout",
+        message: error.message,
+        logFile: options.logFile ?? job.logFile ?? existingTimedOut.logFile ?? null,
+      });
+      writeJobFile(job.workspaceRoot, job.id, {
+        ...existingTimedOut,
+        status: "timed_out",
+        phase: "timed_out",
+        errorMessage: error.message,
+        failureFile: timeoutFailureFile,
+        pid: null,
+        completedAt: timedOutAt,
+        logFile: options.logFile ?? job.logFile ?? existingTimedOut.logFile ?? null
+      });
+      upsertJob(job.workspaceRoot, {
+        id: job.id,
+        status: "timed_out",
+        phase: "timed_out",
+        pid: null,
+        errorMessage: error.message,
+        failureFile: timeoutFailureFile,
+        completedAt: timedOutAt
+      });
+      throw error;
+    }
     const errorMessage = error instanceof Error ? error.message : String(error);
     const existing = readStoredJobOrNull(job.workspaceRoot, job.id) ?? runningRecord;
     const completedAt = nowIso();

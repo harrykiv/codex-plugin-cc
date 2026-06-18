@@ -71,6 +71,19 @@ async function main() {
   let activeStreamThreadIds = null;
   const sockets = new Set();
 
+  // A1 idle-reaper: the broker is spawned detached + unref'd, so a parent that
+  // exits without signalling it leaves it orphaned to PID 1. Without a self-reap
+  // these accumulate over days and exhaust the host process cap (broke fork()
+  // host-wide). Reset the activity clock on every connection/message; reap only
+  // when no socket is connected for the idle window, so an active review is never
+  // killed and the shared-per-cwd broker still persists across back-to-back calls.
+  const IDLE_TIMEOUT_MS = (() => {
+    const raw = Number(process.env.CODEX_BROKER_IDLE_TIMEOUT_MS);
+    return Number.isFinite(raw) && raw >= 0 ? raw : 30 * 60 * 1000; // default 30 min; 0 disables
+  })();
+  let lastActivityAt = Date.now();
+  let idleTimer = null;
+
   function clearSocketOwnership(socket) {
     if (activeRequestSocket === socket) {
       activeRequestSocket = null;
@@ -100,6 +113,10 @@ async function main() {
   }
 
   async function shutdown(server) {
+    if (idleTimer) {
+      clearInterval(idleTimer);
+      idleTimer = null;
+    }
     for (const socket of sockets) {
       socket.end();
     }
@@ -116,11 +133,13 @@ async function main() {
   appClient.setNotificationHandler(routeNotification);
 
   const server = net.createServer((socket) => {
+    lastActivityAt = Date.now();
     sockets.add(socket);
     socket.setEncoding("utf8");
     let buffer = "";
 
     socket.on("data", async (chunk) => {
+      lastActivityAt = Date.now();
       buffer += chunk;
       let newlineIndex = buffer.indexOf("\n");
       while (newlineIndex !== -1) {
@@ -244,6 +263,15 @@ async function main() {
   });
 
   server.listen(listenTarget.path);
+
+  if (IDLE_TIMEOUT_MS > 0) {
+    idleTimer = setInterval(() => {
+      if (sockets.size === 0 && Date.now() - lastActivityAt >= IDLE_TIMEOUT_MS) {
+        shutdown(server).finally(() => process.exit(0));
+      }
+    }, Math.min(IDLE_TIMEOUT_MS, 60 * 1000));
+    idleTimer.unref?.();
+  }
 }
 
 main().catch((error) => {
